@@ -1,0 +1,21 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+
+tickers = ["AAPL","MSFT","GOOGL","AMZN","META",...]  
+
+def build_features(ticker, period="2y"):
+    df = yf.download(ticker, period=period, auto_adjust=True)[["Close","Volume"]]
+    df.columns = ["close","volume"]
+    df["ret"] = np.log(df["close"]).diff()
+    df["vol_20"] = df["ret"].rolling(20).std() * np.sqrt(252)
+    df["vol_5"]  = df["ret"].rolling(5).std()  * np.sqrt(252)
+    df["vol_60"] = df["ret"].rolling(60).std() * np.sqrt(252)
+    df["vol_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
+    df["ar_z"] = (df["ret"] - df["ret"].rolling(20).mean()) / df["ret"].rolling(20).std()
+    df["vol_z"] = (df["volume"] - df["volume"].rolling(20).mean()) / df["volume"].rolling(20).std()
+    df["high_52w"] = df["close"].rolling(252).max()
+    df["low_52w"]  = df["close"].rolling(252).min()
+    df["anchor"]   = (df["close"] - df["low_52w"]) / (df["high_52w"] - df["low_52w"])
+    df["event_flag"] = ((df["ar_z"] < -2.5) & (df["vol_z"] > 2.0)).astype(int)
+    return df.dropna()
