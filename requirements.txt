@@ -1,0 +1,10 @@
+yfinance
+bloombb 
+pandas
+numpy
+matplotlib
+pytorch
+skitlearn
+opencv
+seaborn
+
