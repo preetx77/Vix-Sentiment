@@ -1,0 +1,53 @@
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import matplotlib.pyplot as plt
+
+
+vix = yf.download("^VIX", start="2000-01-01")["Close"].squeeze()
+spx = yf.download("^GSPC", start="2000-01-01")["Close"].squeeze()
+
+# aligning hthe dates 
+df = pd.DataFrame({"VIX": vix, "SPX": spx}).dropna()
+
+# --- 2. Compute forward 3-month returns (63 trading days) ---
+df["fwd_return_3m"] = df["SPX"].shift(-63) / df["SPX"] - 1
+
+# Drop last 63 rows (NaN forward returns)
+df = df.dropna()
+
+# --- 3. Create VIX regimes ---
+def vix_bucket(v):
+    if v < 15:
+        return "<15"
+    elif v < 20:
+        return "15-20"
+    elif v < 30:
+        return "20-30"
+    else:
+        return ">30"
+
+df["VIX_regime"] = df["VIX"].apply(vix_bucket)
+
+counts = df.groupby("VIX_regime")["fwd_return_3m"].count()
+print(counts)
+
+median = df.groupby("VIX_regime")["fwd_return_3m"].median()
+print(median)
+
+
+# --- 4. Aggregate results ---
+results = df.groupby("VIX_regime")["fwd_return_3m"].mean().sort_index()
+
+print("Average 3M Forward Returns by VIX Regime:")
+print(results)
+
+# --- 5. Plot ---
+plt.figure()
+results.plot(kind="bar")
+plt.title("S&P 500 3-Month Forward Returns by VIX Regime")
+plt.ylabel("Average Return")
+plt.xlabel("VIX Regime")
+plt.xticks(rotation=0)
+plt.tight_layout()
+plt.show()
