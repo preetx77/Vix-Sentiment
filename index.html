@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VIX Regime Meter</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0a0914;
+    --surface:   #12102a;
+    --surface2:  #1a1830;
+    --border:    rgba(255,255,255,0.07);
+    --calm:      #1d9e75;
+    --normal:    #ba7517;
+    --stress:    #d85a30;
+    --panic:     #a32d2d;
+    --calm-lit:  #25c491;
+    --normal-lit:#ef9f27;
+    --stress-lit:#f07350;
+    --panic-lit: #e24b4a;
+    --purple:    #7c78d8;
+    --purple-lit:#a59fe8;
+    --text:      #e8e6f5;
+    --muted:     #9b99b8;
+    --dim:       #4a4870;
+  }
+
+  html, body {
+    width: 100%; min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+
+  .card {
+    width: 100%;
+    max-width: 680px;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 20px;
+    padding: 2rem 2.2rem 2rem;
+  }
+
+  .toprow {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 1.6rem;
+  }
+
+  .badge {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    border: 0.5px solid var(--dim);
+    padding: 3px 10px;
+    border-radius: 20px;
+  }
+
+  .datestamp {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 0.08em;
+  }
+
+  .vix-display {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 0.3rem;
+  }
+
+  .vix-num {
+    font-size: 64px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--panic-lit);
+    font-variant-numeric: tabular-nums;
+    transition: color 0.4s;
+  }
+
+  .vix-label {
+    font-size: 13px;
+    color: var(--muted);
+    padding-bottom: 6px;
+  }
+
+  .regime-name {
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    color: var(--panic-lit);
+    margin-bottom: 1.8rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: color 0.4s;
+  }
+
+  .pulse {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--panic-lit);
+    animation: pulse 1.8s ease-in-out infinite;
+    transition: background 0.4s;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+
+  .meter-wrap {
+    margin-bottom: 1rem;
+  }
+
+  .needle-track {
+    position: relative;
+    height: 24px;
+    margin-bottom: 4px;
+  }
+
+  .needle {
+    position: absolute;
+    top: 4px;
+    width: 2px;
+    height: 20px;
+    background: #fff;
+    border-radius: 2px;
+    transform: translateX(-50%);
+    transition: left 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  .needle::before {
+    content: '';
+    position: absolute;
+    top: -5px;
+    left: 50%;
+    transform: translateX(-50%);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid #fff;
+  }
+
+  .bar {
+    height: 12px;
+    border-radius: 8px;
+    display: flex;
+    overflow: hidden;
+    gap: 2px;
+  }
+
+  .seg {
+    height: 100%;
+    border-radius: 0;
+    transition: opacity 0.3s;
+  }
+  .seg:first-child { border-radius: 8px 0 0 8px; }
+  .seg:last-child  { border-radius: 0 8px 8px 0; }
+
+  .seg.active { opacity: 1; }
+  .seg.inactive { opacity: 0.25; }
+
+  .zone-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 10px;
+  }
+
+  .zone-lbl {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .zone-lbl:last-child { align-items: flex-end; }
+  .zone-lbl:nth-child(2), .zone-lbl:nth-child(3) { align-items: center; }
+
+  .zone-lbl .zname { font-weight: 500; }
+  .zone-lbl .zrange { color: var(--dim); font-size: 9px; }
+
+  .divider {
+    height: 0.5px;
+    background: var(--border);
+    margin: 1.6rem 0;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0,1fr));
+    gap: 10px;
+    margin-bottom: 1.6rem;
+  }
+
+  .stat {
+    background: var(--surface2);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+
+  .stat-lbl {
+    font-family: 'DM Mono', monospace;
+    font-size: 9px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 5px;
+  }
+
+  .stat-val {
+    font-size: 20px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat-sub {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 3px;
+    font-family: 'DM Mono', monospace;
+  }
+
+  .slider-section {
+    background: var(--surface2);
+    border-radius: 12px;
+    padding: 1.2rem 1.4rem;
+    margin-bottom: 1.4rem;
+  }
+
+  .slider-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+
+  .slider-label {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'DM Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .slider-val {
+    font-family: 'DM Mono', monospace;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  input[type=range] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    background: var(--border);
+    border-radius: 4px;
+    outline: none;
+    cursor: pointer;
+  }
+
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    cursor: pointer;
+    border: 2px solid var(--surface2);
+  }
+
+  .insight-box {
+    border-left: 2px solid var(--purple);
+    padding-left: 1rem;
+    margin-bottom: 1.4rem;
+    border-radius: 0;
+  }
+
+  .insight-title {
+    font-size: 11px;
+    color: var(--purple-lit);
+    font-family: 'DM Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin-bottom: 5px;
+  }
+
+  .insight-text {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .insight-text strong {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .source {
+    font-family: 'DM Mono', monospace;
+    font-size: 9px;
+    color: var(--dim);
+    letter-spacing: 0.05em;
+    text-align: right;
+    margin-top: 0.4rem;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+
+  <div class="toprow">
+    <span class="badge">CBOE · VIX regime meter</span>
+    <span class="datestamp">Apr 1, 2026</span>
+  </div>
+
+  <div class="vix-display">
+    <span class="vix-num" id="vixNum">30.6</span>
+    <span class="vix-label">VIX index</span>
+  </div>
+  <div class="regime-name">
+    <span class="pulse" id="pulse"></span>
+    <span id="regimeName">Panic — extreme fear zone</span>
+  </div>
+
+  <div class="meter-wrap">
+    <div class="needle-track">
+      <div class="needle" id="needle"></div>
+    </div>
+    <div class="bar">
+      <div class="seg" id="s0" style="width:27%; background:#1d9e75;"></div>
+      <div class="seg" id="s1" style="width:18%; background:#ba7517;"></div>
+      <div class="seg" id="s2" style="width:27%; background:#d85a30;"></div>
+      <div class="seg" id="s3" style="width:28%; background:#a32d2d;"></div>
+    </div>
+    <div class="zone-labels">
+      <div class="zone-lbl"><span class="zname" style="color:#25c491;">Calm</span><span class="zrange">&lt; 15</span></div>
+      <div class="zone-lbl"><span class="zname" style="color:#ef9f27;">Normal</span><span class="zrange">15 – 20</span></div>
+      <div class="zone-lbl"><span class="zname" style="color:#f07350;">Stress</span><span class="zrange">20 – 30</span></div>
+      <div class="zone-lbl"><span class="zname" style="color:#e24b4a;">Panic</span><span class="zrange">30 +</span></div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="stats-grid">
+    <div class="stat">
+      <p class="stat-lbl">52-week low</p>
+      <p class="stat-val" style="color:#25c491;">13.4</p>
+      <p class="stat-sub">calm · mid-2025</p>
+    </div>
+    <div class="stat">
+      <p class="stat-lbl">52-week high</p>
+      <p class="stat-val" style="color:#e24b4a;">60.1</p>
+      <p class="stat-sub">panic · apr 2025</p>
+    </div>
+    <div class="stat">
+      <p class="stat-lbl">Long-run avg</p>
+      <p class="stat-val" style="color:#ef9f27;">19.5</p>
+      <p class="stat-sub">normal · 1990–2026</p>
+    </div>
+  </div>
+
+  <div class="slider-section">
+    <div class="slider-header">
+      <span class="slider-label">Simulate any VIX level</span>
+      <span class="slider-val" id="sliderVal">30.6</span>
+    </div>
+    <input type="range" id="vixSlider" min="10" max="80" step="0.1" value="30.6">
+  </div>
+
+  <div class="insight-box">
+    <p class="insight-title" id="insightTitle">Research signal</p>
+    <p class="insight-text" id="insightText">At current levels, research confirms a <strong>statistically significant contrarian buy signal</strong> — VIX spikes above 30 have historically produced +6.8% avg returns over 3 months (Preprints.org, Feb 2026). The market's fear is already in the price.</p>
+  </div>
+
+  <p class="source">Sources: CBOE · Investing.com · Preprints.org · MDPI JRFM 2025</p>
+
+</div>
+
+<script>
+const zones = [
+  { max: 15,  name: 'Calm — low volatility environment',       color: '#25c491', insTitle: 'Calm market signal', ins: 'VIX below 15 signals investor complacency and low expected volatility. Historically a period of equity outperformance — but also a warning of <strong>potential mean-reversion</strong> ahead.' },
+  { max: 20,  name: 'Normal — typical market conditions',      color: '#ef9f27', insTitle: 'Normal market signal', ins: 'VIX in the 15–20 range reflects baseline uncertainty — the historical average is ~19.5. Markets are functioning normally. <strong>No strong directional signal</strong> from volatility alone.' },
+  { max: 30,  name: 'Stress — elevated fear and hedging',      color: '#f07350', insTitle: 'Stress zone signal', ins: 'Institutional hedging is elevated. Investors are buying protection. Research shows this zone often precedes <strong>choppy but not catastrophic</strong> market outcomes. Watch for resolution direction.' },
+  { max: 999, name: 'Panic — extreme fear zone',               color: '#e24b4a', insTitle: 'Contrarian buy signal', ins: 'At current levels, research confirms a <strong>statistically significant contrarian buy signal</strong> — VIX spikes above 30 have historically produced +6.8% avg returns over 3 months (Preprints.org, Feb 2026). The market\'s fear is already in the price.' },
+];
+
+const segs = [
+  { el: document.getElementById('s0'), min: 10, max: 15 },
+  { el: document.getElementById('s1'), min: 15, max: 20 },
+  { el: document.getElementById('s2'), min: 20, max: 30 },
+  { el: document.getElementById('s3'), min: 30, max: 80 },
+];
+
+function getZoneIndex(v) {
+  if (v < 15) return 0;
+  if (v < 20) return 1;
+  if (v < 30) return 2;
+  return 3;
+}
+
+function getNeedleLeft(v) {
+  const clamped = Math.min(Math.max(v, 10), 80);
+  const widths = [27, 18, 27, 28];
+  const thresholds = [15, 20, 30, 80];
+  const starts = [0, 27, 45, 72];
+  let zi = getZoneIndex(clamped);
+  const segMin = zi === 0 ? 10 : [10,15,20,30][zi];
+  const segMax = thresholds[zi];
+  const frac = (clamped - segMin) / (segMax - segMin);
+  const leftPct = starts[zi] + frac * widths[zi];
+  return Math.min(Math.max(leftPct, 1), 99);
+}
+
+function update(v) {
+  const val = parseFloat(v);
+  const zi = getZoneIndex(val);
+  const zone = zones[zi];
+
+  document.getElementById('vixNum').textContent = val.toFixed(1);
+  document.getElementById('vixNum').style.color = zone.color;
+  document.getElementById('regimeName').textContent = zone.name;
+  document.getElementById('regimeName').style.color = zone.color;
+  document.getElementById('pulse').style.background = zone.color;
+  document.getElementById('sliderVal').textContent = val.toFixed(1);
+  document.getElementById('insightTitle').textContent = zone.insTitle;
+  document.getElementById('insightText').innerHTML = zone.ins;
+
+  const left = getNeedleLeft(val);
+  document.getElementById('needle').style.left = left + '%';
+
+  segs.forEach((s, i) => {
+    s.el.className = 'seg ' + (i === zi ? 'active' : 'inactive');
+  });
+}
+
+document.getElementById('vixSlider').addEventListener('input', e => update(e.target.value));
+update(30.6);
+</script>
+</body>
+</html>
