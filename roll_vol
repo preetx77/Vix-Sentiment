@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-tickers = ["AAPL","MSFT","GOOGL","AMZN","META",...]  
+tickers = ["AAPL","MSFT","GOOGL","AMZN","META"]
 
 def build_features(ticker, period="2y"):
     df = yf.download(ticker, period=period, auto_adjust=True)[["Close","Volume"]]
