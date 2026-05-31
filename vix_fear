@@ -1,0 +1,316 @@
+"""
+VIX FUTURES BASIS v2 — github.com/preetx77/Vix-Sentiment
+Focus: drawdown + forward returns by term structure
+Robustness: thresholds 20 / 25 / 30
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from scipy import stats
+import warnings
+warnings.filterwarnings("ignore")
+
+USE_LIVE_DATA = True
+
+# ── DATA ─────────────────────────────────────────────────────────────────────
+
+def load_live():
+    import yfinance as yf
+    raw = {}
+    for k, t in {"vix":"^VIX","vix3m":"^VIX3M","spx":"^GSPC"}.items():
+        s = yf.download(t, start="2010-01-01", progress=False,
+                        auto_adjust=True)["Close"].squeeze()
+        raw[k] = s
+    df = pd.DataFrame(raw).dropna()
+    df.index = pd.DatetimeIndex(df.index).normalize()
+    return df
+
+def load_synthetic():
+    np.random.seed(42)
+    dates = pd.bdate_range("2010-01-01","2026-04-01")
+    n = len(dates)
+    ret = np.random.normal(0.0003, 0.011, n)
+    for c in [330,1350,2200,2600,3200,3960]:
+        ret[c:c+40] = np.random.normal(-0.003, 0.025, 40)
+    spx = 2000 * np.exp(np.cumsum(ret))
+    vix = np.zeros(n); vix[0] = 18.0
+    for i in range(1,n):
+        vix[i] = max(9, vix[i-1]+0.08*(18-vix[i-1])+3.5*(-8*ret[i]+np.random.normal(0,0.5)))
+    for c in [330,1350,2200,2600,3200,3960]:
+        peak = np.random.uniform(32,65)
+        for j in range(min(50,n-c)):
+            vix[c+j] = max(vix[c+j], peak*np.exp(-0.05*j))
+    vix3m = vix + np.random.normal(2.5, 1.0, n)
+    for c in [330,1350,2200,2600,3200,3960]:
+        vix3m[c:c+25] = vix[c:c+25] - np.random.uniform(1,6,25)
+    return pd.DataFrame({"vix":vix,"vix3m":np.clip(vix3m,9,90),"spx":spx},index=dates)
+
+def load_data():
+    print(f"  Mode: {'LIVE' if USE_LIVE_DATA else 'SYNTHETIC'}")
+    return load_live() if USE_LIVE_DATA else load_synthetic()
+
+# ── SIGNALS ───────────────────────────────────────────────────────────────────
+
+def compute_basis(df):
+    df = df.copy()
+    df["basis"] = df["vix3m"] - df["vix"]
+    # Five buckets — reviewer's suggestion
+    df["basis_bucket"] = pd.cut(df["basis"],
+        bins=[-99, -3, -0.5, 0.5, 3, 99],
+        labels=["Deep Back","Mild Back","Flat","Mild Cont","Deep Cont"])
+    return df.dropna()
+
+# ── EPISODES ──────────────────────────────────────────────────────────────────
+
+def get_episodes(df, threshold=25):
+    above = df["vix"] > threshold
+    eps   = []
+    i     = 0
+    while i < len(df):
+        if above.iloc[i]:
+            s = i
+            while i < len(df) and above.iloc[i]: i += 1
+            e = i - 1
+            ep      = df.iloc[s:e+1]
+            pre_spx = df["spx"].iloc[max(0,s-1)]
+            post    = df["spx"].iloc[e+1:]
+            rec_idx = post[post >= pre_spx].index
+            # Forward returns from episode start
+            fwd5  = df["spx"].pct_change(5).shift(-5).iloc[s]  * 100
+            fwd20 = df["spx"].pct_change(20).shift(-20).iloc[s]* 100
+            eps.append({
+                "threshold":   threshold,
+                "start":       df.index[s].date(),
+                "duration":    e - s + 1,
+                "basis_start": round(df["basis"].iloc[s], 2),
+                "bucket":      str(df["basis_bucket"].iloc[s]),
+                "drawdown":    round((ep["spx"].min()-pre_spx)/pre_spx*100, 2),
+                "recovery":    (rec_idx[0]-df.index[e]).days if len(rec_idx) else None,
+                "fwd5":        round(fwd5,  2),
+                "fwd20":       round(fwd20, 2),
+                "peak_vix":    round(ep["vix"].max(), 1),
+            })
+        else:
+            i += 1
+    return pd.DataFrame(eps)
+
+# ── ANALYSIS ──────────────────────────────────────────────────────────────────
+
+def analyse(df):
+    bucket_order = ["Deep Back","Mild Back","Flat","Mild Cont","Deep Cont"]
+    results      = {}
+
+    print("\n" + "="*62)
+    print("  ROBUSTNESS CHECK — three thresholds")
+    print("="*62)
+
+    for thr in [20, 25, 30]:
+        eps = get_episodes(df, thr)
+        if len(eps) < 5:
+            continue
+        results[thr] = eps
+
+        grp = (eps.groupby("bucket", observed=True)
+               .agg(n=("drawdown","count"),
+                    avg_dd=("drawdown","mean"),
+                    avg_fwd5=("fwd5","mean"),
+                    avg_fwd20=("fwd20","mean"),
+                    avg_rec=("recovery", lambda x: x.dropna().mean()))
+               .reindex(bucket_order).round(2))
+
+        r_dd, p_dd   = stats.pearsonr(eps["basis_start"], eps["drawdown"])
+        r_f5, p_f5   = stats.pearsonr(eps.dropna(subset=["fwd5"])["basis_start"],
+                                       eps.dropna(subset=["fwd5"])["fwd5"])
+        r_f20, p_f20 = stats.pearsonr(eps.dropna(subset=["fwd20"])["basis_start"],
+                                       eps.dropna(subset=["fwd20"])["fwd20"])
+
+        # Mann-Whitney U: backwardation vs non-backwardation drawdowns
+        back = eps[eps["bucket"].isin(["Deep Back","Mild Back"])]["drawdown"]
+        non  = eps[eps["bucket"].isin(["Flat","Mild Cont","Deep Cont"])]["drawdown"]
+        if len(back) > 2 and len(non) > 2:
+            u_stat, p_mw = stats.mannwhitneyu(back, non, alternative="less")
+        else:
+            p_mw = float("nan")
+
+        print(f"\n  VIX > {thr}  ({len(eps)} episodes)")
+        print(grp.to_string())
+        print(f"  basis→drawdown:  r={r_dd:.4f}  p={p_dd:.4f}"
+              f"  {'✓' if p_dd<0.05 else '✗'}")
+        print(f"  basis→fwd5d:     r={r_f5:.4f}  p={p_f5:.4f}"
+              f"  {'✓' if p_f5<0.05 else '✗'}")
+        print(f"  basis→fwd20d:    r={r_f20:.4f}  p={p_f20:.4f}"
+              f"  {'✓' if p_f20<0.05 else '✗'}")
+        print(f"  Mann-Whitney (back vs non-back drawdown): p={p_mw:.4f}"
+              f"  {'✓ backwardation episodes significantly worse' if p_mw<0.05 else '✗ not significant'}")
+        if not np.isnan(p_mw):
+            print(f"  Avg drawdown — Backwardation: {back.mean():.2f}%"
+                  f"  Non-backwardation: {non.mean():.2f}%")
+
+    return results, bucket_order
+
+# ── CHART ─────────────────────────────────────────────────────────────────────
+
+def plot(df, results, bucket_order):
+    plt.rcParams.update({
+        "figure.facecolor":"white","axes.facecolor":"white",
+        "axes.edgecolor":"#cccccc","axes.linewidth":0.8,
+        "axes.spines.top":False,"axes.spines.right":False,
+        "grid.color":"#e5e5e5","grid.linewidth":0.6,
+        "text.color":"#1a1a1a","font.family":"DejaVu Sans","font.size":9,
+        "xtick.color":"#555555","ytick.color":"#555555",
+        "legend.framealpha":0.9,"legend.edgecolor":"#cccccc","legend.fontsize":8,
+    })
+
+    fig = plt.figure(figsize=(20,14))
+    fig.patch.set_facecolor("white")
+    fig.text(0.05,0.97,"VIX FUTURES BASIS — TERM STRUCTURE AT STRESS ONSET",
+             fontsize=13,fontweight="bold",color="#1a1a1a",va="top")
+    fig.text(0.05,0.945,
+             "Drawdown + forward returns by basis bucket  ·  "
+             "Robustness: VIX>20 / 25 / 30  ·  github.com/preetx77/Vix-Sentiment",
+             fontsize=9,color="#555555",va="top")
+
+    gs = gridspec.GridSpec(3,3,figure=fig,hspace=0.42,wspace=0.32,
+                           top=0.91,bottom=0.06,left=0.05,right=0.97)
+    ax1 = fig.add_subplot(gs[0,:])
+    ax2 = fig.add_subplot(gs[1,0])
+    ax3 = fig.add_subplot(gs[1,1])
+    ax4 = fig.add_subplot(gs[1,2])
+    ax5 = fig.add_subplot(gs[2,:2])
+    ax6 = fig.add_subplot(gs[2,2])
+
+    colors5 = ["#d62728","#ff7f0e","#aaaaaa","#2ca02c","#17becf"]
+    clr_map  = dict(zip(bucket_order, colors5))
+
+    def sax(ax, title=""):
+        ax.set_facecolor("white")
+        ax.tick_params(colors="#555555",labelsize=8)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#cccccc")
+        ax.spines["bottom"].set_color("#cccccc")
+        ax.grid(True,color="#e5e5e5",linewidth=0.6,linestyle="-")
+        ax.set_axisbelow(True)
+        if title:
+            ax.set_title(title,color="#1a1a1a",fontsize=9.5,
+                         fontweight="bold",pad=10,loc="left")
+
+    # Chart 1: VIX + basis timeline
+    ax1b = ax1.twinx()
+    ax1b.plot(df.index, df["basis"], color="#d97706",
+              linewidth=0.9, alpha=0.8, label="Basis (VIX3M−VIX)")
+    ax1b.axhline(0,color="#cccccc",linewidth=0.6,linestyle="--")
+    ax1b.fill_between(df.index,df["basis"],0,
+                      where=df["basis"]<0,color="#d62728",alpha=0.15,label="Backwardation")
+    ax1b.fill_between(df.index,df["basis"],0,
+                      where=df["basis"]>0,color="#2ca02c",alpha=0.10,label="Contango")
+    ax1b.set_ylabel("Basis",fontsize=8,color="#d97706")
+    ax1b.tick_params(colors="#555555",labelsize=8)
+    ax1b.spines["top"].set_visible(False)
+    ax1b.spines["right"].set_color("#cccccc")
+    ax1.plot(df.index,df["vix"],color="#5254a3",linewidth=1.0,label="VIX")
+    for thr,ls,col in [(20,":",  "#aaaaaa"),(25,"--","#d97706"),(30,"-","#d62728")]:
+        ax1.axhline(thr,color=col,linewidth=0.6,linestyle=ls,
+                    label=f"VIX>{thr}",alpha=0.8)
+    sax(ax1,"VIX + basis over time  ·  three stress thresholds shown")
+    ax1.legend(fontsize=7,loc="upper left")
+    ax1b.legend(fontsize=7,loc="upper right")
+
+    # Charts 2-4: drawdown / fwd5 / fwd20 by bucket for each threshold
+    eps25 = results.get(25, pd.DataFrame())
+    for ax, col, title in [
+        (ax2, "drawdown", "Avg drawdown by basis bucket  (VIX>25)"),
+        (ax3, "fwd5",     "Avg 5d forward return by bucket"),
+        (ax4, "fwd20",    "Avg 20d forward return by bucket"),
+    ]:
+        if eps25.empty: continue
+        grp = (eps25.groupby("bucket",observed=True)[col]
+               .mean().reindex(bucket_order))
+        bar_c = [clr_map.get(b,"#aaaaaa") for b in grp.index]
+        bars  = ax.bar(range(len(grp)), grp.values,
+                       color=bar_c, alpha=0.85, zorder=3)
+        for bar, v in zip(bars, grp.values):
+            if not np.isnan(v):
+                ax.text(bar.get_x()+bar.get_width()/2,
+                        v+(0.1 if v>=0 else -0.3),
+                        f"{v:.1f}%", ha="center", fontsize=7,
+                        color="#555555")
+        ax.axhline(0,color="#cccccc",linewidth=0.8)
+        ax.set_xticks(range(len(grp)))
+        ax.set_xticklabels(["D.Back","M.Back","Flat","M.Cont","D.Cont"],
+                           fontsize=7,rotation=15)
+        ax.set_ylabel("%", fontsize=8, color="#555555")
+        sax(ax, title)
+
+    # Chart 5: robustness — avg drawdown per bucket across all thresholds
+    thrs_avail = sorted(results.keys())
+    x5 = np.arange(len(bucket_order))
+    w5 = 0.25
+    off_map = {20:-0.25, 25:0, 30:0.25}
+    thr_cols = {20:"#5254a3", 25:"#d97706", 30:"#d62728"}
+    for thr in thrs_avail:
+        eps = results[thr]
+        grp = (eps.groupby("bucket",observed=True)["drawdown"]
+               .mean().reindex(bucket_order))
+        ax5.bar(x5+off_map[thr], grp.values, width=w5,
+                color=thr_cols[thr], alpha=0.75,
+                label=f"VIX>{thr}", zorder=3)
+    ax5.axhline(0,color="#cccccc",linewidth=0.8)
+    ax5.set_xticks(x5)
+    ax5.set_xticklabels(bucket_order, fontsize=8)
+    ax5.set_ylabel("Avg drawdown (%)", fontsize=8, color="#555555")
+    ax5.legend(fontsize=8)
+    sax(ax5,"Robustness: avg drawdown by bucket across all three thresholds")
+
+    # Chart 6: scatter basis vs drawdown (VIX>25)
+    if not eps25.empty:
+        sc = [clr_map.get(b,"#aaaaaa") for b in eps25["bucket"]]
+        ax6.scatter(eps25["basis_start"], eps25["drawdown"],
+                    c=sc, alpha=0.7, s=35, zorder=3)
+        ax6.axvline(0,color="#cccccc",linewidth=0.8,linestyle="--")
+        ax6.axhline(0,color="#cccccc",linewidth=0.8)
+        x6 = eps25["basis_start"].values
+        y6 = eps25["drawdown"].values
+        m,b = np.polyfit(x6,y6,1)
+        xr  = np.linspace(x6.min(),x6.max(),100)
+        r,p = stats.pearsonr(x6,y6)
+        ax6.plot(xr,m*xr+b,color="#5254a3",linewidth=1.5,linestyle="--",
+                 label=f"r={r:.3f}  p={p:.3f}")
+        ax6.set_xlabel("Basis at episode start",fontsize=8,color="#555555")
+        ax6.set_ylabel("SPX drawdown (%)",fontsize=8,color="#555555")
+        ax6.legend(fontsize=7)
+        sax(ax6,"Basis at start vs drawdown (VIX>25)")
+
+    fig.text(0.5,0.015,
+             "Data: CBOE VIX · VIX3M · SPX via Yahoo Finance  ·  "
+             "github.com/preetx77/Vix-Sentiment",
+             ha="center",fontsize=7.5,color="#aaaaaa")
+
+    plt.savefig("vix_basis_v2_output.png",dpi=150,
+                bbox_inches="tight",facecolor="white")
+    print("\n  Saved → vix_basis_v2_output.png")
+    plt.show()
+
+# ── MAIN ─────────────────────────────────────────────────────────────────────
+
+def main():
+    print("\n"+"="*62)
+    print("  VIX BASIS v2  —  github.com/preetx77/Vix-Sentiment")
+    print("="*62)
+    print("\n[1/3] Loading data...")
+    df = load_data()
+    df = compute_basis(df)
+    print(f"  {len(df):,} days  ({df.index[0].date()} → {df.index[-1].date()})")
+    print(f"  Current basis: {df['basis'].iloc[-1]:.2f}  "
+          f"→  {df['basis_bucket'].iloc[-1]}")
+
+    print("\n[2/3] Analysing episodes across thresholds...")
+    results, bucket_order = analyse(df)
+
+    print("\n[3/3] Plotting...")
+    plot(df, results, bucket_order)
+
+if __name__ == "__main__":
+    main()
